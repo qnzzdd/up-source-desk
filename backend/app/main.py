@@ -14,6 +14,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from .repository import DemoRepository
 from .live_repository import LiveRepository
 from .live import BilibiliReader, LiveError, router as live_router
+from .follow_sync import FollowingSync
 
 ROOT = Path(__file__).resolve().parents[2]
 Mode = Literal["demo", "live"]
@@ -32,13 +33,19 @@ def create_app(db_path: Path | None = None, frontend_path: Path | None = None, l
     if cache_path.resolve() == repo.path.resolve():
         raise ValueError("Live and demo databases must use separate files")
     reader.repository = LiveRepository(cache_path)
+    reader.sync = FollowingSync(reader)
 
     @asynccontextmanager
     async def lifespan(app):
         repo.initialize()
         reader.repository.initialize()
-        yield
-        await reader.http.aclose()
+        try:
+            yield
+        finally:
+            try:
+                await reader.sync.close()
+            finally:
+                await reader.http.aclose()
 
     app = FastAPI(title="UP Source Desk Demo", version="0.1.0", lifespan=lifespan)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost", "testserver"])

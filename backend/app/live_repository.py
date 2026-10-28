@@ -29,7 +29,7 @@ class LiveRepository:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.connection() as con:
             version = con.execute("PRAGMA user_version").fetchone()[0]
-            if version not in (0, 1, 2, 3):
+            if version not in (0, 1, 2, 3, 4):
                 raise RuntimeError("Unsupported live database schema version")
             con.executescript("""
                 CREATE TABLE IF NOT EXISTS live_sources (
@@ -68,8 +68,26 @@ class LiveRepository:
                     account_uid TEXT NOT NULL, group_id TEXT NOT NULL, source_uid TEXT NOT NULL,
                     PRIMARY KEY(account_uid, group_id, source_uid)
                 );
-                PRAGMA user_version=3;
+                CREATE TABLE IF NOT EXISTS following_sync (
+                    account_uid TEXT PRIMARY KEY, status TEXT NOT NULL
+                );
+                PRAGMA user_version=4;
             """)
+            for row in con.execute("SELECT account_uid, status FROM following_sync").fetchall():
+                status = json.loads(row["status"])
+                if status.get("state") == "running":
+                    status.update(state="stopped", error="上次同步被中断，请登录后重新同步。")
+                status["next_run"] = None
+                con.execute("UPDATE following_sync SET status=? WHERE account_uid=?", (json.dumps(status), row["account_uid"]))
+
+    def save_sync(self, account_uid, status):
+        with self.connection() as con:
+            con.execute("INSERT INTO following_sync VALUES (?, ?) ON CONFLICT(account_uid) DO UPDATE SET status=excluded.status", (account_uid, json.dumps(status)))
+
+    def load_sync(self, account_uid):
+        with self.connection() as con:
+            row = con.execute("SELECT status FROM following_sync WHERE account_uid=?", (account_uid,)).fetchone()
+        return json.loads(row["status"]) if row else None
 
     def save_account(self, account_uid, name):
         with self.connection() as con:

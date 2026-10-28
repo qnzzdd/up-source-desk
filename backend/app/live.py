@@ -65,6 +65,7 @@ class BilibiliReader:
             trust_env=False, timeout=20, follow_redirects=False,
             headers={"User-Agent": "Mozilla/5.0", "Referer": "https://www.bilibili.com/"})
         self.lock = asyncio.Lock()
+        self.request_lock = asyncio.Lock()
         self.interval = interval
         self.last = 0.0
         self.blocked_until = 0.0
@@ -76,8 +77,13 @@ class BilibiliReader:
         self.follow_page = 0
         self.follow_has_more = False
         self.repository = None
+        self.sync = None
 
     async def request(self, path, params=None, passport=False, include_cookies=False):
+        async with self.request_lock:
+            return await self._request(path, params, passport, include_cookies)
+
+    async def _request(self, path, params=None, passport=False, include_cookies=False):
         now = time.monotonic()
         if now < self.blocked_until:
             raise LiveError("RISK_COOLDOWN", "平台触发风控，已暂停请求十分钟。", 429)
@@ -100,6 +106,8 @@ class BilibiliReader:
             self.blocked_until = time.monotonic() + 600
             raise LiveError("RISK_COOLDOWN", "平台风控，已暂停十分钟。", 429)
         if body["code"] == -101:
+            if self.sync and asyncio.current_task() is not self.sync.task:
+                self.sync.stop("登录已失效，自动同步已停止。")
             self.account = None
             self.cookie = None
             self.allowed.clear()
@@ -125,6 +133,8 @@ class BilibiliReader:
             raise LiveError("LOGIN_REQUIRED", "尚未获得有效账号身份。", 401)
         uid = str(data["mid"])
         if self.account and self.account["uid"] != uid:
+            if self.sync:
+                self.sync.stop("账号已切换。")
             self.allowed.clear()
             self.follow_page = 0
             self.follow_has_more = False
@@ -174,7 +184,10 @@ class BilibiliReader:
             raise LiveError("SCHEMA_CHANGED", "未收到安全有效的登录凭据。")
         self.cookie = "; ".join(f"{k}={v}" for k, v in cookies.items() if v)
         self.key = None
-        return {"state": "connected", "account": await self.identity()}
+        account = await self.identity()
+        if self.sync:
+            await self.sync.start()
+        return {"state": "connected", "account": account}
 
     def require_account(self):
         if not self.account or not self.cookie:
@@ -203,10 +216,26 @@ class BilibiliReader:
 
     async def followings(self, next_page=False):
         self.require_account()
+        if self.sync and self.sync.running:
+            raise LiveError("SYNC_RUNNING", "全量关注同步进行中，请查看同步进度。", 409)
         if next_page and (not self.follow_page or not self.follow_has_more):
             raise LiveError("NO_NEXT_PAGE", "请先读取首页，或已没有可继续读取的分页。", 409)
         page = self.follow_page + 1 if next_page else 1
-        data = await self.request("/x/relation/followings", {"vmid": self.account["uid"], "pn": page, "ps": 20, "order": "desc", "order_type": ""})
+        result = await self.following_page(page, 20)
+        items, total = result["items"], result["total"]
+        ids = {row["uid"] for row in items}
+        new_ids = ids - self.allowed if next_page else ids
+        self.allowed = self.allowed | ids if next_page else ids
+        self.follow_page = page
+        self.follow_has_more = bool(new_ids) and len(self.allowed) < total
+        return {"mode": "live", "items": items, "total": total,
+                "partial": len(self.allowed) < total, "scope": "manual_pages",
+                "page": page, "loaded": len(self.allowed), "has_more": self.follow_has_more,
+                "warning": "分页未取得新账号，已停止；不表示完整同步。" if not new_ids and len(self.allowed) < total else ""}
+
+    async def following_page(self, page, page_size=50):
+        self.require_account()
+        data = await self.request("/x/relation/followings", {"vmid": self.account["uid"], "pn": page, "ps": page_size, "order": "desc", "order_type": ""})
         if not isinstance(data, dict) or not isinstance(data.get("list"), list) or type(data.get("total")) is not int:
             raise LiveError("SCHEMA_CHANGED", "关注列表结构异常，未更新数据。")
         items = []
@@ -220,16 +249,7 @@ class BilibiliReader:
                           "bio": str(row.get("sign", "")), "group_ids": tags})
         self.cache_operation("save_followings", items)
         self.cache_operation("save_account", self.account.get("name", self.account["uid"]))
-        ids = {row["uid"] for row in items}
-        new_ids = ids - self.allowed if next_page else ids
-        self.allowed = self.allowed | ids if next_page else ids
-        self.follow_page = page
-        # Empty/repeated pages must not drive an endless scan or imply completion.
-        self.follow_has_more = bool(new_ids) and len(self.allowed) < data["total"]
-        return {"mode": "live", "items": items, "total": data["total"],
-                "partial": len(self.allowed) < data["total"], "scope": "manual_pages",
-                "page": page, "loaded": len(self.allowed), "has_more": self.follow_has_more,
-                "warning": "分页未取得新账号，已停止；不表示完整同步。" if not new_ids and len(self.allowed) < data["total"] else ""}
+        return {"items": items, "total": data["total"]}
 
     async def groups(self):
         self.require_account()
@@ -282,6 +302,15 @@ def router(reader):
         async with reader.lock:
             if action == "session":
                 return {"account": reader.account if reader.cookie else None}
+            if action == "sync-status":
+                return reader.sync.status(reader.account["uid"] if reader.account else None)
+            if action == "sync-start":
+                reader.require_account()
+                return await reader.sync.start()
+            if action == "sync-stop":
+                reader.require_account()
+                reader.sync.stop("已手动停止自动关注同步。")
+                return reader.sync.status(reader.account["uid"])
             if action == "local-accounts":
                 return reader.local_operation("accounts")
             if action == "qr":
@@ -300,6 +329,7 @@ def router(reader):
             if action == "cache":
                 return reader.cached()
             if action == "disconnect":
+                reader.sync.stop("账号已断开，自动同步已停止。")
                 reader.cookie = reader.account = reader.key = None
                 reader.allowed.clear()
                 reader.follow_page = 0
