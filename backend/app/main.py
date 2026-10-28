@@ -1,4 +1,4 @@
-"""Read-only local demo API. No Bilibili login or remote access is performed."""
+"""Local demo API with a separately guarded, memory-only live reader."""
 
 import os
 from contextlib import asynccontextmanager
@@ -12,6 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .repository import DemoRepository
+from .live import BilibiliReader, LiveError, router as live_router
 
 ROOT = Path(__file__).resolve().parents[2]
 Mode = Literal["demo", "live"]
@@ -22,16 +23,23 @@ class ApiError(Exception):
         self.status, self.code, self.message = status, code, message
 
 
-def create_app(db_path: Path | None = None, frontend_path: Path | None = None):
+def create_app(db_path: Path | None = None, frontend_path: Path | None = None, live_reader=None):
     repo = DemoRepository(db_path or ROOT / "data" / "demo.sqlite3")
+    reader = live_reader or BilibiliReader()
 
     @asynccontextmanager
     async def lifespan(app):
         repo.initialize()
         yield
+        await reader.http.aclose()
 
     app = FastAPI(title="UP Source Desk Demo", version="0.1.0", lifespan=lifespan)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost", "testserver"])
+
+    @app.exception_handler(LiveError)
+    async def live_error(request, error):
+        return JSONResponse(status_code=error.status, content={"error": {
+            "code": error.code, "message": error.message}})
 
     @app.exception_handler(ApiError)
     async def api_error(request, error):
@@ -55,7 +63,7 @@ def create_app(db_path: Path | None = None, frontend_path: Path | None = None):
 
     def require_demo(mode: Mode = "demo"):
         if mode == "live":
-            raise ApiError(503, "LIVE_NOT_CONNECTED", "真实 B 站接口尚未接入，当前仅提供合成演示数据。没有读取登录态或真实关注列表。")
+            raise ApiError(503, "LIVE_NOT_CONNECTED", "演示接口不提供真实数据。请使用概览上方的独立真实账号接入区。")
 
     api = APIRouter(prefix="/api", dependencies=[Depends(require_demo)])
 
@@ -116,6 +124,7 @@ def create_app(db_path: Path | None = None, frontend_path: Path | None = None):
     def unknown(path: str):
         raise ApiError(404, "API_NOT_FOUND", "接口不存在。演示版不提供修改 B 站账号的操作。")
 
+    app.include_router(live_router(reader))
     app.include_router(api)
     dist = frontend_path if frontend_path is not None else ROOT / "frontend" / "dist"
     if dist.is_dir():

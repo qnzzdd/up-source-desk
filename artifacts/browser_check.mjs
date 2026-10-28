@@ -2,7 +2,7 @@ import { writeFile } from 'node:fs/promises'
 
 const endpoint = 'http://127.0.0.1:9224'
 const pages = await fetch(`${endpoint}/json/list`).then(response => response.json())
-const page = pages.find(item => item.type === 'page' && item.url.startsWith('http://127.0.0.1:8767'))
+const page = pages.find(item => item.type === 'page' && ['http://127.0.0.1:8767/', 'http://127.0.0.1:8768/'].includes(item.url))
 if (!page) throw new Error('No debuggable page')
 const socket = new WebSocket(page.webSocketDebuggerUrl)
 const pending = new Map()
@@ -31,7 +31,7 @@ async function evaluate(expression) {
   return result.result.value
 }
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
-await call('Page.reload')
+await call('Page.navigate', {url:'http://127.0.0.1:8768/'})
 await sleep(1000)
 await sleep(500)
 await evaluate("document.querySelector('.source-row').click()")

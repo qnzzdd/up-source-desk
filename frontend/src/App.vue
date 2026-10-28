@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
+import LiveConnect from './LiveConnect.vue'
 import { ApiFailure, friendlyError, get } from './api'
 import type { Account, Dynamic, Group, Page, Source, Video } from './api'
 
@@ -269,7 +270,7 @@ onMounted(() => {
         <span class="demo-icon" aria-hidden="true"><svg class="icon"><use href="#icon-shield" /></svg></span>
         <div class="demo-copy">
           <strong>合成演示数据</strong>
-          <span>未登录 B 站，当前关注、分组、视频和动态均为本地合成样例。</span>
+          <span>演示工作台使用合成数据；真实账号接入区独立展示，不混用数据。</span>
         </div>
         <span class="demo-badge">DEMO ONLY</span>
       </div>
@@ -337,7 +338,7 @@ onMounted(() => {
 
         <div class="sidebar-note">
           <svg class="icon" aria-hidden="true"><use href="#icon-lock" /></svg>
-          <div><strong>只读工作区</strong><span>当前版本不会登录、同步或写入真实账号。</span></div>
+          <div><strong>只读工作区</strong><span>演示区不操作真实账号；真实接入区仅提供手动只读验证。</span></div>
         </div>
       </aside>
 
@@ -354,11 +355,12 @@ onMounted(() => {
           </div>
         </div>
 
+        <LiveConnect v-if="activeView === 'overview'" />
         <section v-if="activeView === 'overview'" class="onboarding-hero" aria-labelledby="onboarding-title">
           <div class="hero-copy">
             <span class="hero-kicker">开始使用</span>
             <h2 id="onboarding-title">把关注内容，收进一个清晰的工作台。</h2>
-            <p>先用合成数据熟悉关注列表、分组筛选和内容浏览。真实账号接入将在后续版本提供。</p>
+            <p>先用合成数据熟悉关注列表、分组筛选和内容浏览。真实账号请使用上方独立接入区，不会替换这里的演示数据。</p>
             <button class="primary-button" type="button" @click="openView('followings')">
               查看关注列表
               <svg class="icon" aria-hidden="true"><use href="#icon-arrow" /></svg>
@@ -368,8 +370,8 @@ onMounted(() => {
             <li>
               <span class="step-number">01</span>
               <div class="step-copy">
-                <div><strong>连接 B 站账号</strong><span class="step-status unavailable">暂不可用</span></div>
-                <p>当前版本不提供登录、扫码或账号绑定。</p>
+                <div><strong>连接 B 站账号</strong><span class="step-status unavailable">上方手动连接</span></div>
+                <p>使用上方二维码接入区；凭据仅保存在后端内存。</p>
               </div>
             </li>
             <li :class="{ ready: Boolean(account && groups.length) }">
@@ -601,11 +603,11 @@ onMounted(() => {
             <section class="rail-card connection-card">
               <div class="rail-card-head">
                 <span class="rail-icon" aria-hidden="true"><svg class="icon"><use href="#icon-shield" /></svg></span>
-                <div><h2>连接状态</h2><p>真实账号尚未接入</p></div>
+                <div><h2>连接状态</h2><p>演示区连接状态</p></div>
               </div>
               <div class="status-list">
                 <div><span>数据模式</span><strong class="status-demo"><i aria-hidden="true"></i> 合成演示</strong></div>
-                <div><span>账号状态</span><strong>未连接</strong></div>
+                <div><span>账号状态</span><strong>演示账号</strong></div>
                 <div><span>写入权限</span><strong>只读</strong></div>
                 <div><span>本地存储</span><strong>SQLite</strong></div>
               </div>

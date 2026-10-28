@@ -47,3 +47,15 @@ npm --prefix frontend install
 ## Console verification
 
 The white/light-blue console provides overview, followings and read-only groups. Search, filtering, pagination and video/dynamic tabs operate on synthetic data. The real-interface check returns LIVE_NOT_CONNECTED; QR login, live sync, AI and reports are not implemented. See [UI acceptance](docs/UI_ACCEPTANCE.md) for evidence and walkthrough.
+
+## Live connection checkpoint
+
+The overview now contains a separate real-account panel. Generate a QR code, scan and confirm in the Bilibili app, then manually check its state. Credentials stay in server memory and disappear on restart/disconnect. Never paste cookies into chat. Use one local server process on 127.0.0.1 only.
+
+After identity verification, manually read the first 20 followings and platform groups. Select one sampled UP to read its first video or dynamic page. This is NOT full synchronization: no live records are persisted, no unfollow detection or scheduled collection runs. Requests are serialized with a three-second interval; risk responses pause network operations for ten minutes without retry.
+
+The imported root app/ and scripts/sync_* CLI prototype is retained from the remote branch but is not the web backend and has not passed live acceptance. Use scripts/run-demo.ps1, not RUN.md, for this web checkpoint.
+
+Validation: 38 backend tests (mocked platform responses), Vue typecheck and production build. Authenticated followings and content require user scanning and platform acceptance; tests do not establish that access.
+
+Live smoke check: the integrated QR endpoint returned HTTP 200 with a generated image; one state check returned waiting_scan. Bilibili currently returned account.bilibili.com as the QR destination, verified and added to the exact HTTPS host allowlist. The ephemeral challenge was cleared after testing. No user has scanned during this automated check.
