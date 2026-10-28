@@ -43,3 +43,7 @@ npm --prefix frontend install
 - 整体架构、采集安全与实施阶段：[`docs/PLAN.md`](docs/PLAN.md)
 
 临时项目名与技术选型均可在实现前调整。
+
+## Console verification
+
+The white/light-blue console provides overview, followings and read-only groups. Search, filtering, pagination and video/dynamic tabs operate on synthetic data. The real-interface check returns LIVE_NOT_CONNECTED; QR login, live sync, AI and reports are not implemented. See [UI acceptance](docs/UI_ACCEPTANCE.md) for evidence and walkthrough.

@@ -48,12 +48,12 @@ type Page<T> = {
 - A visible real-data connection test triggers `mode=live` and shows the actual failure without changing demo data into supposedly live data.
 - Loading, empty and error states; explicit retry. Preserve pagination and show counts. Prevent stale requests from overwriting newer selection/filter state.
 - Mobile-friendly, keyboard-accessible buttons, input labels, no `v-html`, credentials or browser storage.
-- Visual direction: warm editorial workspace, cream paper, deep pine green, vermilion accents, serif Chinese headings, purposeful spacing. Avoid default purple/dashboard clutter. CSS thumbnails only, no network images/fonts.
+- Visual direction: user-approved white/light-blue console, compact top bar, left navigation, rounded cards, subtle borders and shadows. CSS thumbnails only, no network images/fonts.
 
 ## Ownership
 
 - Original delegation scope was frontend source only, while Codex owned manifests/config/lockfile, backend, tests, scripts and docs. The DeepSeek route did not execute the implementation after repeated prompts. Codex therefore implemented frontend source locally; no worker-authored files are being claimed.
-- The shared checkout remained bounded to this repository. No demo changes are committed or pushed.
+- The shared checkout remained bounded to this repository. The original demo baseline is committed as 5f87355 (not pushed). The subsequent console redesign was authored by DeepSeek through the verified isolated Codex CLI route, then reviewed and integrated by the parent.
 
 ## Validation
 
