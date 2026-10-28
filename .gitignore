@@ -1,0 +1,28 @@
+# Local secrets and state
+.env
+.env.*
+!.env.example
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+data/
+reports/
+cookies/
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+
+# Node and editor state
+node_modules/
+dist/
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
