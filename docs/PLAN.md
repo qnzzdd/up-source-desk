@@ -25,7 +25,7 @@
 | GitHub CLI | 正常权限下登录态与 API 均可用 | 沙箱内无法读取凭据，不能据此判断令牌失效 |
 | Python | 默认 3.14.3；另有 uv 管理的 3.11.17，pip 可用 | 建议先验证 3.11 的业务依赖兼容性，再锁定运行版本 |
 | SQLite | 本机 Python 自带 3.50.4 | 足以承载首版本地数据 |
-| Node.js / npm | v24.14.1 / 11.11.0，可用 | 可做前端构建；首版可先用模板减少复杂度 |
+| Node.js / npm | v24.14.1 / 11.11.0，可用 | 用于 Vue 3 + Vite 前端构建 |
 | uv | 正常权限下可用；沙箱内缓存目录访问被拒绝 | 可用于管理 Python 环境，依赖安装尚未验证 |
 | Docker | CLI 存在；正常权限下 Docker Desktop Linux 引擎管道也不存在 | 当前不可直接运行容器；不作为首版必要依赖 |
 | Windows 任务计划 | `schtasks.exe` 可用 | 可用作本机定时触发备选 |
@@ -39,11 +39,16 @@
 Browser
   |
   v
-FastAPI + server-rendered templates
-  |-- Auth/session: local only
+Vue 3 + TypeScript (same-origin JSON)
+  |-- Account and sync status
   |-- Group and source management
   |-- Report browsing and export
   |-- Batch-operation preview and confirmation
+  |
+  v
+FastAPI JSON API
+  |-- Auth/session: local only
+  |-- Request validation and sync orchestration
   |
   v
 Application services

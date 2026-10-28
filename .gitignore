@@ -20,6 +20,10 @@ __pycache__/
 # Node and editor state
 node_modules/
 dist/
+.npm-cache/
+.browser-profile/
+.browser-debug/
+artifacts/*.png
 .vscode/
 .idea/
 
