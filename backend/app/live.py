@@ -4,7 +4,7 @@ import base64
 import io
 import ssl
 import time
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 import httpx
 import qrcode
@@ -17,6 +17,39 @@ from app.bili.wbi import keys_from_nav, sign
 class LiveError(Exception):
     def __init__(self, code, message, status=502):
         self.code, self.message, self.status = code, message, status
+
+
+def dynamic_text(item, depth=0):
+    """Read known text fields only; media URLs are never fetched."""
+    def obj(value):
+        return value if isinstance(value, dict) else {}
+
+    parts = []
+
+    def add(value):
+        if isinstance(value, str):
+            value = value.strip()
+            if value and value not in parts:
+                parts.append(value)
+
+    dynamic = obj(obj(item.get("modules")).get("module_dynamic"))
+    desc = obj(dynamic.get("desc"))
+    add(desc.get("text"))
+    major = obj(dynamic.get("major"))
+    for name in ("opus", "archive", "article", "common", "music", "pgc", "live", "courses"):
+        card = obj(major.get(name))
+        add(card.get("title"))
+        add(obj(card.get("summary")).get("text"))
+        add(card.get("desc"))
+        if isinstance(card.get("summary"), str):
+            add(card["summary"])
+    # Forwarded posts retain both the author's comment and the original text.
+    original = item.get("orig")
+    if depth < 2 and isinstance(original, dict):
+        text = dynamic_text(original, depth + 1)
+        if text:
+            add("转发原文：\n" + text)
+    return "\n".join(parts)
 
 
 class BilibiliReader:
@@ -33,8 +66,10 @@ class BilibiliReader:
         self.account = None
         self.cookie = None
         self.allowed = set()
+        self.follow_page = 0
+        self.follow_has_more = False
 
-    async def request(self, path, params=None, passport=False):
+    async def request(self, path, params=None, passport=False, include_cookies=False):
         now = time.monotonic()
         if now < self.blocked_until:
             raise LiveError("RISK_COOLDOWN", "平台触发风控，已暂停请求十分钟。", 429)
@@ -60,12 +95,20 @@ class BilibiliReader:
             self.account = None
             self.cookie = None
             self.allowed.clear()
+            self.follow_page = 0
+            self.follow_has_more = False
             self.http.cookies.clear()
             raise LiveError("LOGIN_REQUIRED", "请扫码登录或重新验证账号。", 401)
         if body["code"] != 0:
             raise LiveError("UPSTREAM_REJECTED", f"平台业务错误：{body['code']}。")
         if "data" not in body:
             raise LiveError("SCHEMA_CHANGED", "平台未返回 data 字段。")
+        if include_cookies:
+            # Only use cookies from this response, not stale login attempts.
+            cookies = {c.name: c.value for c in response.cookies.jar
+                       if c.domain.lstrip('.') in {"bilibili.com", "passport.bilibili.com"}
+                       and c.name in {"SESSDATA", "bili_jct", "DedeUserID"}}
+            return body["data"], cookies
         return body["data"]
 
     async def identity(self):
@@ -97,7 +140,7 @@ class BilibiliReader:
         if not self.key or time.monotonic() - self.qr_started > 180:
             self.key = None
             return {"state": "expired"}
-        data = await self.request("/x/passport-login/web/qrcode/poll", {"qrcode_key": self.key}, passport=True)
+        data, response_cookies = await self.request("/x/passport-login/web/qrcode/poll", {"qrcode_key": self.key}, passport=True, include_cookies=True)
         if not isinstance(data, dict):
             raise LiveError("SCHEMA_CHANGED", "扫码状态响应无效。")
         code = data.get("code")
@@ -109,7 +152,10 @@ class BilibiliReader:
         if type(code) is not int or code != 0:
             raise LiveError("QR_UNKNOWN_STATE", "未知扫码状态，未判定登录成功。")
         values = parse_qs(urlparse(data.get("url", "")).query)
-        cookies = {k: values.get(k, [""])[0] for k in ("SESSDATA", "bili_jct", "DedeUserID")}
+        # Current web login delivers credentials via Set-Cookie. Older responses
+        # carried them in the callback query; re-encode decoded cookie values.
+        cookies = {k: response_cookies.get(k) or quote(values.get(k, [""])[0], safe="")
+                   for k in ("SESSDATA", "bili_jct", "DedeUserID")}
         if not cookies["SESSDATA"] or any(any(c in v for c in "\r\n;") for v in cookies.values()):
             raise LiveError("SCHEMA_CHANGED", "未收到安全有效的登录凭据。")
         self.cookie = "; ".join(f"{k}={v}" for k, v in cookies.items() if v)
@@ -120,9 +166,12 @@ class BilibiliReader:
         if not self.account or not self.cookie:
             raise LiveError("LOGIN_REQUIRED", "先扫码并验证账号身份。", 401)
 
-    async def followings(self):
+    async def followings(self, next_page=False):
         self.require_account()
-        data = await self.request("/x/relation/followings", {"vmid": self.account["uid"], "pn": 1, "ps": 20, "order": "desc", "order_type": ""})
+        if next_page and (not self.follow_page or not self.follow_has_more):
+            raise LiveError("NO_NEXT_PAGE", "请先读取首页，或已没有可继续读取的分页。", 409)
+        page = self.follow_page + 1 if next_page else 1
+        data = await self.request("/x/relation/followings", {"vmid": self.account["uid"], "pn": page, "ps": 20, "order": "desc", "order_type": ""})
         if not isinstance(data, dict) or not isinstance(data.get("list"), list) or type(data.get("total")) is not int:
             raise LiveError("SCHEMA_CHANGED", "关注列表结构异常，未更新数据。")
         items = []
@@ -131,9 +180,16 @@ class BilibiliReader:
                 raise LiveError("SCHEMA_CHANGED", "关注条目缺少账号 ID。")
             items.append({"uid": str(row["mid"]), "name": str(row.get("uname", "")),
                           "bio": str(row.get("sign", "")), "group_ids": row.get("tag")})
-        self.allowed = {row["uid"] for row in items}
+        ids = {row["uid"] for row in items}
+        new_ids = ids - self.allowed if next_page else ids
+        self.allowed = self.allowed | ids if next_page else ids
+        self.follow_page = page
+        # Empty/repeated pages must not drive an endless scan or imply completion.
+        self.follow_has_more = bool(new_ids) and len(self.allowed) < data["total"]
         return {"mode": "live", "items": items, "total": data["total"],
-                "partial": len(items) < data["total"], "scope": "first_20_only"}
+                "partial": len(self.allowed) < data["total"], "scope": "manual_pages",
+                "page": page, "loaded": len(self.allowed), "has_more": self.follow_has_more,
+                "warning": "分页未取得新账号，已停止；不表示完整同步。" if not new_ids and len(self.allowed) < data["total"] else ""}
 
     async def groups(self):
         self.require_account()
@@ -161,7 +217,7 @@ class BilibiliReader:
             if not isinstance(rows, list):
                 raise TypeError()
             items = [{"id": str(r["bvid"]), "text": str(r["title"])} for r in rows] if kind == "videos" else [
-                {"id": str(r["id_str"]), "text": str((r["modules"].get("module_dynamic", {}).get("desc") or {}).get("text") or "非纯文字动态，请到 B站查看原内容")} for r in rows]
+                {"id": str(r["id_str"]), "text": dynamic_text(r) or "平台未返回可读取的文字，请查看原动态。"} for r in rows]
         except (KeyError, TypeError, AttributeError):
             raise LiveError("SCHEMA_CHANGED", "内容响应结构异常，未视为无更新。") from None
         return {"mode": "live", "items": items, "scope": "first_page_only"}
@@ -189,11 +245,15 @@ def router(reader):
                 return {"account": await reader.identity()}
             if action == "followings":
                 return await reader.followings()
+            if action == "followings-next":
+                return await reader.followings(next_page=True)
             if action == "groups":
                 return await reader.groups()
             if action == "disconnect":
                 reader.cookie = reader.account = reader.key = None
                 reader.allowed.clear()
+                reader.follow_page = 0
+                reader.follow_has_more = False
                 reader.http.cookies.clear()
                 return {"state": "disconnected"}
             raise LiveError("NOT_FOUND", "操作不存在。", 404)
