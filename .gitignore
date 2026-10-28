@@ -30,3 +30,8 @@ artifacts/*.png
 # OS
 .DS_Store
 Thumbs.db
+
+# Bilibili credentials (never commit)
+cookie.txt
+*.cookie
+media/
