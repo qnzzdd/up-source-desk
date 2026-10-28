@@ -11,6 +11,7 @@ import httpx
 import qrcode
 import qrcode.image.svg
 from fastapi import APIRouter, Depends, Request
+from pydantic import BaseModel, Field
 
 from app.bili.wbi import keys_from_nav, sign
 
@@ -18,6 +19,11 @@ from app.bili.wbi import keys_from_nav, sign
 class LiveError(Exception):
     def __init__(self, code, message, status=502):
         self.code, self.message, self.status = code, message, status
+
+
+class GroupEdit(BaseModel):
+    name: str = Field(default="", max_length=60)
+    source_uids: list[str] = Field(default_factory=list, max_length=10000)
 
 
 def dynamic_text(item, depth=0):
@@ -182,6 +188,8 @@ class BilibiliReader:
             raise LiveError("CACHE_UNAVAILABLE", "本地缓存尚未初始化。", 503)
         try:
             return getattr(self.repository, operation)(*args)
+        except ValueError as error:
+            raise LiveError("INVALID_LOCAL_DATA", str(error), 400) from None
         except sqlite3.Error:
             raise LiveError("CACHE_UNAVAILABLE", "本地缓存读写失败，未推进读取进度；请检查磁盘后重试。", 503) from None
 
@@ -304,6 +312,23 @@ def router(reader):
     async def local_cache(account_uid: str):
         async with reader.lock:
             return reader.local_operation("load", account_uid)
+
+    @api.post("/local/{account_uid}/tool-groups")
+    async def tool_groups(account_uid: str):
+        async with reader.lock:
+            return reader.local_operation("tool_groups", account_uid)
+
+    @api.post("/local/{account_uid}/tool-groups/create")
+    async def create_group(account_uid: str, body: GroupEdit):
+        async with reader.lock:
+            return reader.local_operation("edit_tool_group", account_uid, "create", None, body.name)
+
+    @api.post("/local/{account_uid}/tool-groups/{group_id}/{action}")
+    async def edit_group(account_uid: str, group_id: str, action: str, body: GroupEdit):
+        if action not in ("rename", "delete", "members"):
+            raise LiveError("NOT_FOUND", "操作不存在。", 404)
+        async with reader.lock:
+            return reader.local_operation("edit_tool_group", account_uid, action, group_id, body.name, body.source_uids)
 
     @api.post("/local/{account_uid}/sources/{uid}/{kind}")
     async def local_content(account_uid: str, uid: str, kind: str):

@@ -139,4 +139,4 @@ def test_v1_database_migrates_without_losing_history(tmp_path):
         assert result == {'items': [{'uid': 'old-owner', 'name': 'old-owner'}]}
         assert client.post('/api/live/local/old-owner', headers=HEADERS).json()['cached_at'] == '2026-01-01'
     with sqlite3.connect(path) as con:
-        assert con.execute('PRAGMA user_version').fetchone()[0] == 2
+        assert con.execute('PRAGMA user_version').fetchone()[0] == 3

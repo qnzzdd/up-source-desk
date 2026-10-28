@@ -2,6 +2,7 @@
 
 import json
 import sqlite3
+import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -28,7 +29,7 @@ class LiveRepository:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.connection() as con:
             version = con.execute("PRAGMA user_version").fetchone()[0]
-            if version not in (0, 1, 2):
+            if version not in (0, 1, 2, 3):
                 raise RuntimeError("Unsupported live database schema version")
             con.executescript("""
                 CREATE TABLE IF NOT EXISTS live_sources (
@@ -59,13 +60,59 @@ class LiveRepository:
                     kind TEXT NOT NULL, updated_at TEXT NOT NULL,
                     PRIMARY KEY(account_uid, source_uid, kind)
                 );
-                PRAGMA user_version=2;
+                CREATE TABLE IF NOT EXISTS tool_groups (
+                    account_uid TEXT NOT NULL, id TEXT NOT NULL, name TEXT NOT NULL,
+                    PRIMARY KEY(account_uid, id), UNIQUE(account_uid, name)
+                );
+                CREATE TABLE IF NOT EXISTS tool_members (
+                    account_uid TEXT NOT NULL, group_id TEXT NOT NULL, source_uid TEXT NOT NULL,
+                    PRIMARY KEY(account_uid, group_id, source_uid)
+                );
+                PRAGMA user_version=3;
             """)
 
     def save_account(self, account_uid, name):
         with self.connection() as con:
             con.execute("""INSERT INTO live_accounts VALUES (?, ?)
                 ON CONFLICT(uid) DO UPDATE SET name=excluded.name""", (account_uid, name))
+
+    def tool_groups(self, account_uid):
+        with self.connection() as con:
+            groups = con.execute("SELECT id, name FROM tool_groups WHERE account_uid=? ORDER BY name", (account_uid,)).fetchall()
+            members = con.execute("SELECT group_id, source_uid FROM tool_members WHERE account_uid=?", (account_uid,)).fetchall()
+            sources = con.execute("SELECT uid, name FROM live_sources WHERE account_uid=? ORDER BY name", (account_uid,)).fetchall()
+        return {"items": [{**dict(g), "source_uids": [m["source_uid"] for m in members if m["group_id"] == g["id"]]} for g in groups],
+                "sources": [dict(s) for s in sources]}
+
+    def edit_tool_group(self, account_uid, action, group_id=None, name=None, source_uids=None):
+        with self.connection() as con:
+            if not con.execute("SELECT 1 FROM live_accounts WHERE uid=? UNION SELECT 1 FROM live_cache_state WHERE account_uid=?", (account_uid, account_uid)).fetchone():
+                raise ValueError("本机没有该账号记录。")
+            if action != "create" and not con.execute("SELECT 1 FROM tool_groups WHERE account_uid=? AND id=?", (account_uid, group_id)).fetchone():
+                raise ValueError("本地分组不存在。")
+            if action in ("create", "rename"):
+                name = name.strip()
+                if not name or len(name) > 60:
+                    raise ValueError("分组名需为 1–60 个非空字符。")
+                if con.execute("SELECT 1 FROM tool_groups WHERE account_uid=? AND name=? AND id!=?", (account_uid, name, group_id or "")).fetchone():
+                    raise ValueError("该账号已有同名本地分组。")
+                if action == "create":
+                    con.execute("INSERT INTO tool_groups VALUES (?, ?, ?)", (account_uid, uuid.uuid4().hex, name))
+                else:
+                    con.execute("UPDATE tool_groups SET name=? WHERE account_uid=? AND id=?", (name, account_uid, group_id))
+            elif action == "delete":
+                con.execute("DELETE FROM tool_members WHERE account_uid=? AND group_id=?", (account_uid, group_id))
+                con.execute("DELETE FROM tool_groups WHERE account_uid=? AND id=?", (account_uid, group_id))
+            elif action == "members":
+                ids = set(source_uids)
+                saved = {r[0] for r in con.execute("SELECT uid FROM live_sources WHERE account_uid=?", (account_uid,))}
+                if not ids <= saved:
+                    raise ValueError("只能添加当前账号已保存的 UP。")
+                con.execute("DELETE FROM tool_members WHERE account_uid=? AND group_id=?", (account_uid, group_id))
+                con.executemany("INSERT INTO tool_members VALUES (?, ?, ?)", [(account_uid, group_id, uid) for uid in ids])
+            else:
+                raise ValueError("不支持的本地分组操作。")
+        return self.tool_groups(account_uid)
 
     def accounts(self):
         with self.connection() as con:
