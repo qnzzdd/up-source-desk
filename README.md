@@ -2,13 +2,13 @@
 
 一个面向个人的 B 站关注信息源管理工具。首版计划作为**本地 Web 应用**运行：在浏览器里整理关注 UP 主的分组，查看新增投稿和动态，并按分组生成可导出的日报。
 
-> 当前提供**合成数据演示工作台 + 独立真实账号只读面板**：支持扫码登录、手动分页读取关注与原生分组、读取选中 UP 的投稿和动态文字。尚未实现真实数据落库、AI 总结或写操作。
+> 当前提供**合成数据演示工作台 + 独立真实账号只读面板**：支持扫码登录、手动分页读取关注与原生分组、读取选中 UP 的投稿和动态文字。关注、原生分组与已读取的视频/动态文字支持本机 SQLite 存储；尚未实现 AI 总结或写操作。
 
 ### 当前真实账号流程
 
 扫码登录 → 读取关注首页 → 手动加载下一页（每页 20 个）→ 读取 B站已有分组 → 按分组或昵称/UID 筛选已读取关注 → 查看选中 UP 的投稿/动态首屏。
 
-分页累计去重，失败不推进页码，空页或重复页停止继续加载并保留不完整提示。分页期间关注可能变化，计数一致也不代表稳定完整快照；不据此判断取关。分组筛选仅覆盖已读取关注，不会额外采集内容。图文、视频卡片、专栏与转发保留平台返回的文字，不读取图片或转写视频。登录态和真实列表仍只保存在内存，重启需要重新扫码。
+分页累计去重，失败不推进页码，空页或重复页停止继续加载并保留不完整提示。分页期间关注可能变化，计数一致也不代表稳定完整快照；不据此判断取关。分组筛选仅覆盖已读取关注，不会额外采集内容。图文、视频卡片、专栏与转发保留平台返回的文字，不读取图片或转写视频。登录态只保存在内存，重启需要重新扫码；关注与分组按账号隔离保存在 data/live.sqlite3，页面启动时自动恢复本机记录；服务重启后无需扫码即可离线浏览，读取 B站新数据才需要扫码。历史记录不代表当前完整关注，可能包含已取关账号；不会从旧分页位置继续扫描。
 
 ## 计划能力
 
@@ -50,18 +50,19 @@ npm --prefix frontend install
 
 临时项目名与技术选型均可在实现前调整。
 
-## Console verification
+## 本机存储与安全
 
-The white/light-blue console provides overview, followings and read-only groups. Search, filtering, pagination and video/dynamic tabs operate on synthetic data. The real-interface check returns LIVE_NOT_CONNECTED; QR login, live sync, AI and reports are not implemented. See [UI acceptance](docs/UI_ACCEPTANCE.md) for evidence and walkthrough.
+- `data/demo.sqlite3` 仅用于合成演示，`data/live.sqlite3` 仅用于真实关注与分组，两者不混用。
+- 真实数据按账号 UID 隔离。本机页面无需登录即可选择历史账号浏览已保存记录；这不是 B站登录，不授权远端请求。刷新页面自动恢复当前内存会话或本机历史。
+- 只保存账号 UID/昵称、关注基本信息、分组、已读取的视频标题/动态文字及保存时间，不保存 Cookie、二维码密钥或接口原始响应。SQLite 文件本身未加密，请保护本机账户和磁盘。
+- 部分分页只更新已读到的记录，不推断取关；读取失败保留之前保存的数据。断开连接清除内存凭据，不删除本机历史。
+- 请求串行、间隔至少三秒；触发风控暂停十分钟，不自动重试。不自动采集全量关注或内容。
+- `app/` 与 `scripts/sync_*` 是早期 CLI 原型，不是当前 Web 后端。当前网页使用 `backend/app/` 和 `frontend/`，按本页命令启动。
 
-## Live connection checkpoint
+自动化测试使用合成平台响应，不代表平台真实接口始终可用。真实账号数据、数据库、日志和截图不应提交到公开仓库。
 
-The overview now contains a separate real-account panel. Generate a QR code, scan and confirm in the Bilibili app, then manually check its state. Credentials stay in server memory and disappear on restart/disconnect. Never paste cookies into chat. Use one local server process on 127.0.0.1 only.
+## 持久化验收
 
-After identity verification, manually read the first 20 followings and platform groups. Select one sampled UP to read its first video or dynamic page. This is NOT full synchronization: no live records are persisted, no unfollow detection or scheduled collection runs. Requests are serialized with a three-second interval; risk responses pause network operations for ten minutes without retry.
+页面启动只调用本机 session/local 接口，不自动采集。未登录时选择本机历史账号、UP，再点击「已保存视频/动态」浏览缓存；登录后成功读取的内容自动保存，重启可恢复。旧版数据库自动升级，不保存登录凭据。
 
-The imported root app/ and scripts/sync_* CLI prototype is retained from the remote branch but is not the web backend and has not passed live acceptance. Use scripts/run-demo.ps1, not RUN.md, for this web checkpoint.
-
-Validation: 38 backend tests (mocked platform responses), Vue typecheck and production build. Authenticated followings and content require user scanning and platform acceptance; tests do not establish that access.
-
-Live smoke check: the integrated QR endpoint returned HTTP 200 with a generated image; one state check returned waiting_scan. Bilibili currently returned account.bilibili.com as the QR destination, verified and added to the exact HTTPS host allowlist. The ephemeral challenge was cleared after testing. No user has scanned during this automated check.
+后端测试包含新 reader 重启恢复与离线零远端请求；scripts/check-persistence-ui.cjs 使用合成接口验证浏览器刷新、离线历史、已保存动态和内存会话恢复（需要 Playwright 与 Edge）。

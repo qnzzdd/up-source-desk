@@ -1,4 +1,4 @@
-"""Local demo API with a separately guarded, memory-only live reader."""
+"""Local demo API with a separately guarded live metadata cache."""
 
 import os
 from contextlib import asynccontextmanager
@@ -12,6 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .repository import DemoRepository
+from .live_repository import LiveRepository
 from .live import BilibiliReader, LiveError, router as live_router
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -23,13 +24,19 @@ class ApiError(Exception):
         self.status, self.code, self.message = status, code, message
 
 
-def create_app(db_path: Path | None = None, frontend_path: Path | None = None, live_reader=None):
+def create_app(db_path: Path | None = None, frontend_path: Path | None = None, live_reader=None,
+               live_db_path: Path | None = None):
     repo = DemoRepository(db_path or ROOT / "data" / "demo.sqlite3")
     reader = live_reader or BilibiliReader()
+    cache_path = live_db_path or repo.path.with_name("live.sqlite3")
+    if cache_path.resolve() == repo.path.resolve():
+        raise ValueError("Live and demo databases must use separate files")
+    reader.repository = LiveRepository(cache_path)
 
     @asynccontextmanager
     async def lifespan(app):
         repo.initialize()
+        reader.repository.initialize()
         yield
         await reader.http.aclose()
 

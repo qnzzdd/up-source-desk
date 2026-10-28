@@ -1,8 +1,9 @@
-"""Single-user, memory-only Bilibili reader. No automatic crawling or retries."""
+"""Bilibili reader with memory-only credentials and an account-scoped metadata cache."""
 import asyncio
 import base64
 import io
 import ssl
+import sqlite3
 import time
 from urllib.parse import parse_qs, quote, urlparse
 
@@ -68,6 +69,7 @@ class BilibiliReader:
         self.allowed = set()
         self.follow_page = 0
         self.follow_has_more = False
+        self.repository = None
 
     async def request(self, path, params=None, passport=False, include_cookies=False):
         now = time.monotonic()
@@ -115,7 +117,13 @@ class BilibiliReader:
         data = await self.request("/x/web-interface/nav")
         if not isinstance(data, dict) or not data.get("isLogin") or not data.get("mid"):
             raise LiveError("LOGIN_REQUIRED", "尚未获得有效账号身份。", 401)
-        self.account = {"uid": str(data["mid"]), "name": str(data.get("uname", ""))}
+        uid = str(data["mid"])
+        if self.account and self.account["uid"] != uid:
+            self.allowed.clear()
+            self.follow_page = 0
+            self.follow_has_more = False
+        self.account = {"uid": uid, "name": str(data.get("uname", ""))}
+        self.cache_operation("save_account", self.account["name"])
         return self.account
 
     async def generate(self):
@@ -166,6 +174,25 @@ class BilibiliReader:
         if not self.account or not self.cookie:
             raise LiveError("LOGIN_REQUIRED", "先扫码并验证账号身份。", 401)
 
+    def cache_operation(self, operation, *args):
+        return self.local_operation(operation, self.account["uid"], *args)
+
+    def local_operation(self, operation, *args):
+        if self.repository is None:
+            raise LiveError("CACHE_UNAVAILABLE", "本地缓存尚未初始化。", 503)
+        try:
+            return getattr(self.repository, operation)(*args)
+        except sqlite3.Error:
+            raise LiveError("CACHE_UNAVAILABLE", "本地缓存读写失败，未推进读取进度；请检查磁盘后重试。", 503) from None
+
+    def cached(self):
+        self.require_account()
+        result = self.cache_operation("load")
+        self.allowed = {item["uid"] for item in result["items"]}
+        self.follow_page = 0
+        self.follow_has_more = False
+        return result
+
     async def followings(self, next_page=False):
         self.require_account()
         if next_page and (not self.follow_page or not self.follow_has_more):
@@ -178,8 +205,13 @@ class BilibiliReader:
         for row in data["list"]:
             if not isinstance(row, dict) or not row.get("mid"):
                 raise LiveError("SCHEMA_CHANGED", "关注条目缺少账号 ID。")
+            tags = row.get("tag")
+            if tags is not None and (not isinstance(tags, list) or any(type(tag) is not int for tag in tags)):
+                raise LiveError("SCHEMA_CHANGED", "关注分组归属结构异常，未更新数据。")
             items.append({"uid": str(row["mid"]), "name": str(row.get("uname", "")),
-                          "bio": str(row.get("sign", "")), "group_ids": row.get("tag")})
+                          "bio": str(row.get("sign", "")), "group_ids": tags})
+        self.cache_operation("save_followings", items)
+        self.cache_operation("save_account", self.account.get("name", self.account["uid"]))
         ids = {row["uid"] for row in items}
         new_ids = ids - self.allowed if next_page else ids
         self.allowed = self.allowed | ids if next_page else ids
@@ -196,8 +228,11 @@ class BilibiliReader:
         data = await self.request("/x/relation/tags")
         if not isinstance(data, list) or any(not isinstance(g, dict) or "tagid" not in g for g in data):
             raise LiveError("SCHEMA_CHANGED", "分组响应异常，不视为未分组。")
-        return {"mode": "live", "items": [{"id": str(g["tagid"]), "name": str(g.get("name", "")),
-                "member_count": g.get("count")} for g in data]}
+        items = [{"id": str(g["tagid"]), "name": str(g.get("name", "")),
+                  "member_count": g.get("count") if type(g.get("count")) is int else None} for g in data]
+        self.cache_operation("save_groups", items)
+        self.cache_operation("save_account", self.account.get("name", self.account["uid"]))
+        return {"mode": "live", "items": items}
 
     async def content(self, uid, kind):
         self.require_account()
@@ -220,6 +255,7 @@ class BilibiliReader:
                 {"id": str(r["id_str"]), "text": dynamic_text(r) or "平台未返回可读取的文字，请查看原动态。"} for r in rows]
         except (KeyError, TypeError, AttributeError):
             raise LiveError("SCHEMA_CHANGED", "内容响应结构异常，未视为无更新。") from None
+        self.cache_operation("save_content", uid, kind, items)
         return {"mode": "live", "items": items, "scope": "first_page_only"}
 
 
@@ -236,6 +272,10 @@ def router(reader):
     @api.post("/{action}")
     async def action(action: str):
         async with reader.lock:
+            if action == "session":
+                return {"account": reader.account if reader.cookie else None}
+            if action == "local-accounts":
+                return reader.local_operation("accounts")
             if action == "qr":
                 return await reader.generate()
             if action == "poll":
@@ -249,6 +289,8 @@ def router(reader):
                 return await reader.followings(next_page=True)
             if action == "groups":
                 return await reader.groups()
+            if action == "cache":
+                return reader.cached()
             if action == "disconnect":
                 reader.cookie = reader.account = reader.key = None
                 reader.allowed.clear()
@@ -257,6 +299,18 @@ def router(reader):
                 reader.http.cookies.clear()
                 return {"state": "disconnected"}
             raise LiveError("NOT_FOUND", "操作不存在。", 404)
+
+    @api.post("/local/{account_uid}")
+    async def local_cache(account_uid: str):
+        async with reader.lock:
+            return reader.local_operation("load", account_uid)
+
+    @api.post("/local/{account_uid}/sources/{uid}/{kind}")
+    async def local_content(account_uid: str, uid: str, kind: str):
+        if kind not in ("videos", "dynamics"):
+            raise LiveError("NOT_FOUND", "内容类型不存在。", 404)
+        async with reader.lock:
+            return reader.local_operation("load_content", account_uid, uid, kind)
 
     @api.post("/sources/{uid}/{kind}")
     async def content(uid: str, kind: str):
